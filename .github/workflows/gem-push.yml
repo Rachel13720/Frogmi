@@ -1,0 +1,150 @@
+import os
+import zipfile
+
+# Crear la estructura del proyecto
+project_name = "sismo_app"
+os.makedirs(os.path.join(project_name, "app/controllers/api"), exist_ok=True)
+os.makedirs(os.path.join(project_name, "lib/tasks"), exist_ok=True)
+os.makedirs(os.path.join(project_name, "public"), exist_ok=True)
+
+# Crear los archivos necesarios
+files = {
+    "Gemfile": """source 'https://rubygems.org'
+
+gem 'rails', '~> 6.1'
+gem 'httparty'
+gem 'active_model_serializers'
+""",
+    "app/controllers/api/features_controller.rb": """class Api::FeaturesController < ApplicationController
+  def index
+    features = Feature.all
+    render json: { data: features, pagination: { current_page: 1, total: features.count, per_page: features.count } }
+  end
+
+  def create_comment
+    feature = Feature.find(params[:feature_id])
+    comment = feature.comments.build(comment_params)
+
+    if comment.save
+      render json: { message: 'Comment created successfully' }, status: :created
+    else
+      render json: { error: comment.errors.full_messages }, status: :unprocessable_entity
+    end
+  end
+
+  private
+
+  def comment_params
+    params.require(:comment).permit(:body)
+  end
+end
+""",
+    "lib/tasks/fetch_sismic_data.rake": """namespace :sismic do
+  desc "Fetch and persist sismic data from USGS"
+  task fetch: :environment do
+    url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
+    response = HTTParty.get(url)
+    features = response.parsed_response["features"]
+
+    features.each do |feature|
+      attributes = feature["properties"]
+      geometry = feature["geometry"]["coordinates"]
+      next if attributes["title"].nil? || attributes["magType"].nil? || attributes["place"].nil? || !(-1.0..10.0).include?(attributes["mag"]) || !(-90.0..90.0).include?(geometry[1]) || !(-180.0..180.0).include?(geometry[0])
+
+      Feature.find_or_create_by(external_id: feature["id"]) do |f|
+        f.magnitude = attributes["mag"]
+        f.place = attributes["place"]
+        f.time = Time.at(attributes["time"] / 1000.0).to_s
+        f.tsunami = attributes["tsunami"]
+        f.mag_type = attributes["magType"]
+        f.title = attributes["title"]
+        f.longitude = geometry[0]
+        f.latitude = geometry[1]
+      end
+    end
+  end
+end
+""",
+    "config/routes.rb": """Rails.application.routes.draw do
+  namespace :api do
+    resources :features, only: [:index] do
+      post 'comments', to: 'features#create_comment'
+    end
+  end
+end
+""",
+    "public/index.html": """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consulta Sismos</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
+</head>
+<body>
+    <div id="app">
+        <h1>Consulta de Sismos</h1>
+        <button @click="fetchFeatures">Obtener Sismos</button>
+        <ul>
+            <li v-for="feature in features" :key="feature.id">
+                {{ feature.attributes.title }} - Magnitud: {{ feature.attributes.magnitude }}
+                <input v-model="commentBody" placeholder="Comentario">
+                <button @click="addComment(feature.id)">Agregar Comentario</button>
+            </li>
+        </ul>
+    </div>
+    <script>
+        new Vue({
+            el: '#app',
+            data: {
+                features: [],
+                commentBody: ''
+            },
+            methods: {
+                fetchFeatures() {
+                    fetch('http://127.0.0.1:3000/api/features')
+                        .then(response => response.json())
+                        .then(data => {
+                            this.features = data.data;
+                        });
+                },
+                addComment(featureId) {
+                    fetch(`http://127.0.0.1:3000/api/features/${featureId}/comments`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ comment: { body: this.commentBody } })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.message) {
+                            alert(data.message);
+                        } else {
+                            alert(data.error);
+                        }
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+}
+
+# Crear los archivos y escribir el contenido
+for file_path, content in files.items():
+    full_path = os.path.join(project_name, file_path)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w") as file:
+        file.write(content)
+
+# Crear un archivo ZIP del proyecto
+zip_path = f"/mnt/data/{project_name}.zip"
+with zipfile.ZipFile(zip_path, 'w') as zipf:
+    for root, dirs, files in os.walk(project_name):
+        for file in files:
+            zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), project_name))
+
+zip_path
